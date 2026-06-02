@@ -29,7 +29,7 @@ void receberSerial() {
     if (c == '\n') {
       buffer[bufferIdx] = '\0';  
       if (bufferIdx > 0) {
-        processar(buffer);
+        processarComando(buffer);
       }
       bufferIdx = 0;  
     }
@@ -39,36 +39,70 @@ void receberSerial() {
   }
 }
 
-void processar(char* msg) {
-  // 1. Separar Payload do Checksum
-  char* asterisco = strchr(msg, '*');
-  if (!asterisco) return; // Pacote malformado
-  
-  *asterisco = '\0'; 
-  char* payload = msg;
-  char* checksum_recv_str = asterisco + 1;
-  
-  // 2. Calcular Checksum local
-  int calc_sum = 0;
-  for (int i = 0; payload[i] != '\0'; i++) {
-    calc_sum += payload[i];
+void processarComando(char* cmd) {
+  // 1. Mostra exatamente o que chegou (com colchetes para ver espaços ocultos)
+  Serial.print("📦 Bruto recebido: ["); 
+  Serial.print(cmd); 
+  Serial.println("]");
+
+  // 2. Verifica se começa com 'A'
+  if (cmd[0] != 'A') {
+    Serial.println("❌ ERRO 1: O comando não começa com a letra 'A'");
+    return;
   }
-  calc_sum &= 0xFF;
-  
-  // 3. Validar Checksum
-  int recv_sum = (int)strtol(checksum_recv_str, NULL, 16);
-  if (calc_sum != recv_sum) {
-    // Serial.println("Erro de Checksum! Pacote ignorado.");
-    return; 
+
+  // 3. Procura o asterisco '*' que separa o valor do checksum
+  char* asterisk = strchr(cmd, '*');
+  if (!asterisk) {
+    Serial.println("❌ ERRO 2: Não encontrei o caractere '*' (checksum ausente)");
+    return;
   }
-  
-  // 4. Extrair Ângulo
-  float angulo = 0;
-  if (payload[0] == 'A') {
-    angulo = atof(payload + 1);
+
+  // 4. Separa a string e calcula o checksum
+  *asterisk = '\0'; // Transforma o '*' em fim de string para o atof funcionar
+  int checksumRecebido = strtol(asterisk + 1, NULL, 16);
+
+  int checksumCalculado = 0;
+  for (char* p = cmd; *p; p++) {
+    checksumCalculado += (unsigned char)*p; // Cast para evitar valores negativos
   }
+  checksumCalculado &= 0xFF; // Garante que fique em 8 bits (0-255)
+
+  // 5. Valida o checksum
+  if (checksumRecebido != checksumCalculado) {
+    Serial.print("❌ ERRO 3: Checksum inválido! | Recebido: 0x");
+    Serial.print(checksumRecebido, HEX);
+    Serial.print(" | Calculado: 0x");
+    Serial.println(checksumCalculado, HEX);
+    return; // <-- Provavelmente está parando aqui!
+  }
+
+  // 6. SE CHEGOU AQUI, O PACOTE É 100% VÁLIDO!
+  float anguloRecebido = atof(cmd + 1); // Pula o 'A' e converte o resto para float
   
-  controlarMotores(angulo);
+  Serial.print("✅ SUCESSO! Ângulo cru: "); 
+  Serial.println(anguloRecebido, 4);
+
+  // --- A PARTIR DAQUI É O SEU CONTROLE NORMAL ---
+  
+  // Deadband
+  if (fabs(anguloRecebido) < 0.08) { // 0.08 é o DEADBAND
+    anguloRecebido = 0.0;
+  }
+
+  // Filtro Exponencial
+  if (!filtroInicializado) {
+    anguloFiltrado = anguloRecebido;
+    filtroInicializado = true;
+  } else {
+    anguloFiltrado = 0.75 * anguloFiltrado + 0.25 * anguloRecebido;
+  }
+
+  Serial.print("🎯 Ângulo Filtrado: "); 
+  Serial.println(anguloFiltrado, 4);
+
+  // Envia para os motores
+  controlarMotores(anguloFiltrado);
 }
 
 void controlarMotores(float erro) {
